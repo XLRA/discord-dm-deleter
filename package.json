@@ -1,7 +1,7 @@
 {
   "name": "discord-dm-deleter",
   "productName": "Discord DM Deleter",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Delete your own Discord direct message history with filters and safe rate limiting. Created by sleepmare.",
   "author": {
     "name": "sleepmare",
@@ -76,7 +76,8 @@
           "target": "portable",
           "arch": ["x64"]
         }
-      ]
+      ],
+      "icon": "build/icon.ico"
     },
     "nsis": {
       "oneClick": false,
@@ -85,7 +86,9 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "Discord DM Deleter",
-      "artifactName": "${productName}-Setup-${version}-${arch}.${ext}"
+      "artifactName": "${productName}-Setup-${version}-${arch}.${ext}",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico"
     },
     "portable": {
       "artifactName": "${productName}-${version}-${arch}-Portable.${ext}"
@@ -98,7 +101,8 @@
         }
       ],
       "category": "public.app-category.utilities",
-      "artifactName": "${productName}-${version}-${arch}.${ext}"
+      "artifactName": "${productName}-${version}-${arch}.${ext}",
+      "icon": "build/icon.icns"
     },
     "linux": {
       "target": [
@@ -108,7 +112,8 @@
         }
       ],
       "category": "Utility",
-      "artifactName": "${productName}-${version}-${arch}.${ext}"
+      "artifactName": "${productName}-${version}-${arch}.${ext}",
+      "icon": "build/icon.png"
     }
   }
 }
