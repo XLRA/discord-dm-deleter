@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { DMChannel, DeletionFilters, DeletionProgress, SessionData } from "../types/discord";
+import type {
+  DMChannel,
+  DeletionFilters,
+  DeletionProgress,
+  SessionData,
+  UpdateEvent,
+} from "../types/discord";
 import { DeletionEngine } from "../deletion/engine";
 import { defaultFilters } from "../deletion/filters";
 import { avatarUrl, displayName } from "../deletion/snowflake";
@@ -10,6 +16,7 @@ import { FilterPanel } from "./FilterPanel";
 import { LoginScreen } from "./LoginScreen";
 import { ProgressPanel } from "./ProgressPanel";
 import { ReviewStep } from "./ReviewStep";
+import { UpdateBanner } from "./UpdateBanner";
 import { WizardSteps } from "./WizardSteps";
 
 type Step = 1 | 2 | 3;
@@ -31,6 +38,20 @@ export default function App() {
   const [confirmOpen, setConfirmOpen] = useState(false);
 
   const engineRef = useRef<DeletionEngine | null>(null);
+
+  const [version, setVersion] = useState<string>("");
+  const [updateState, setUpdateState] = useState<UpdateEvent | null>(null);
+
+  useEffect(() => {
+    if (!window.electronAPI) return;
+    void window.electronAPI.getVersion().then(setVersion);
+    const off = window.electronAPI.onUpdateEvent((event) => {
+      // Ignore the noisy intermediate states; only surface ones the user cares about.
+      if (event.kind === "checking" || event.kind === "not-available") return;
+      setUpdateState(event);
+    });
+    return off;
+  }, []);
 
   const channelName = useMemo(() => {
     if (!selectedChannel) return "";
@@ -183,6 +204,13 @@ export default function App() {
 
   return (
     <div className="app">
+      {updateState && (
+        <UpdateBanner
+          event={updateState}
+          onInstall={() => void window.electronAPI?.quitAndInstall()}
+          onDismiss={() => setUpdateState(null)}
+        />
+      )}
       <header className="app-header">
         <div className="brand">
           <div className="brand-mark" aria-hidden="true">
@@ -190,7 +218,7 @@ export default function App() {
           </div>
           <h1>
             Discord DM Deleter
-            <small>v1.0.0 · by sleepmare</small>
+            <small>{version ? `v${version}` : ""} · by sleepmare</small>
           </h1>
         </div>
         <div className="row">

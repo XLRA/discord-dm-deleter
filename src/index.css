@@ -936,6 +936,101 @@ input[type="radio"] {
   margin: 0 0 20px;
 }
 
+.update-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  margin: 0 0 16px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  font-size: 0.9rem;
+  color: var(--text);
+  position: relative;
+}
+
+.update-banner--info {
+  border-color: rgba(88, 101, 242, 0.45);
+  background: linear-gradient(180deg, var(--accent-soft), var(--bg-elevated));
+}
+
+.update-banner--success {
+  border-color: rgba(35, 165, 90, 0.5);
+  background: linear-gradient(180deg, var(--success-soft), var(--bg-elevated));
+}
+
+.update-banner--warn {
+  border-color: rgba(240, 178, 50, 0.5);
+  background: linear-gradient(180deg, var(--warning-soft), var(--bg-elevated));
+}
+
+.update-banner .update-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 4px rgba(88, 101, 242, 0.18);
+  flex-shrink: 0;
+}
+
+.update-banner--success .update-dot {
+  background: var(--success);
+  box-shadow: 0 0 0 4px rgba(35, 165, 90, 0.18);
+}
+
+.update-banner--warn .update-dot {
+  background: var(--warning);
+  box-shadow: 0 0 0 4px rgba(240, 178, 50, 0.18);
+}
+
+.update-banner__progress {
+  flex: 1 1 140px;
+  max-width: 220px;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.update-banner__progress-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 200ms ease-out;
+}
+
+.update-banner__action {
+  margin-left: auto;
+  padding: 6px 14px;
+  font-size: 0.85rem;
+}
+
+.update-banner__close {
+  background: transparent;
+  border: 0;
+  color: var(--text-dim);
+  font-size: 1.3rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: var(--radius);
+  margin-left: auto;
+}
+
+.update-banner__close:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text);
+}
+
+.update-banner__action + .update-banner__close {
+  margin-left: 0;
+}
+
+.update-banner .muted {
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
 @media (max-width: 720px) {
   .app {
     padding: 16px;
@@ -956,5 +1051,11 @@ input[type="radio"] {
   }
   .step-connector {
     display: none;
+  }
+  .update-banner {
+    flex-wrap: wrap;
+  }
+  .update-banner__action {
+    width: 100%;
   }
 }

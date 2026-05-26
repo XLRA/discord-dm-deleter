@@ -96,3 +96,16 @@ export interface DeletionStats {
 
 export const CHANNEL_TYPE_DM = 1;
 export const CHANNEL_TYPE_GROUP_DM = 3;
+
+export type UpdateEvent =
+  | { kind: "checking" }
+  | { kind: "not-available"; version: string }
+  | { kind: "available"; version: string }
+  | { kind: "downloading"; percent: number; bytesPerSecond: number }
+  | { kind: "downloaded"; version: string }
+  | { kind: "error"; message: string };
+
+export interface UpdateCheckResult {
+  ok: boolean;
+  reason?: string;
+}

@@ -50,6 +50,7 @@ Grab the latest installer for your OS from the [**Releases page**](../../release
 - **Pause / resume / stop** at any time.
 - **Token stored with OS keychain** (`safeStorage` — DPAPI on Windows, Keychain on macOS, libsecret on Linux). Never written in plaintext.
 - **Dry-run mode** — preview exactly what *would* be deleted before pulling the trigger.
+- **Built-in auto-update** — Windows and Linux builds check this repo's releases on launch and self-update in the background. An in-app banner lets you restart to apply when ready.
 
 ---
 

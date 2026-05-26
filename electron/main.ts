@@ -3,7 +3,10 @@ import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import Store from "electron-store";
-import type { SessionData } from "../src/types/discord";
+import electronUpdater from "electron-updater";
+import type { SessionData, UpdateEvent } from "../src/types/discord";
+
+const { autoUpdater } = electronUpdater;
 
 // ESM equivalents of CommonJS __dirname / __filename. Electron loads this
 // bundle as ESM (package.json "type": "module"), so the CJS globals are
@@ -308,6 +311,60 @@ async function openDiscordLogin(): Promise<SessionData | null> {
   });
 }
 
+function emitUpdate(event: UpdateEvent): void {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("update:event", event);
+  }
+}
+
+function setupAutoUpdate(): void {
+  // Skip in dev (no app-update.yml shipped) and skip portable Windows builds
+  // (electron-updater can't self-replace a portable .exe).
+  if (!app.isPackaged) return;
+  if (process.env.PORTABLE_EXECUTABLE_DIR) return;
+
+  // macOS auto-update needs a signed bundle. We ship unsigned, so the
+  // verification step will fail. Silently disable rather than spamming
+  // error dialogs on every launch.
+  if (process.platform === "darwin") return;
+
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.allowPrerelease = false;
+
+  autoUpdater.on("checking-for-update", () => emitUpdate({ kind: "checking" }));
+  autoUpdater.on("update-not-available", (info) =>
+    emitUpdate({ kind: "not-available", version: info.version }),
+  );
+  autoUpdater.on("update-available", (info) =>
+    emitUpdate({ kind: "available", version: info.version }),
+  );
+  autoUpdater.on("download-progress", (p) =>
+    emitUpdate({ kind: "downloading", percent: p.percent, bytesPerSecond: p.bytesPerSecond }),
+  );
+  autoUpdater.on("update-downloaded", (info) =>
+    emitUpdate({ kind: "downloaded", version: info.version }),
+  );
+  autoUpdater.on("error", (err) =>
+    emitUpdate({ kind: "error", message: err instanceof Error ? err.message : String(err) }),
+  );
+
+  // First check 4s after launch so it doesn't compete with the UI for startup
+  // bandwidth, then re-check every 6 hours while the app stays open.
+  setTimeout(() => {
+    autoUpdater.checkForUpdates().catch(() => {
+      // event handler already surfaced the error
+    });
+  }, 4_000);
+
+  setInterval(
+    () => {
+      autoUpdater.checkForUpdates().catch(() => {});
+    },
+    6 * 60 * 60 * 1000,
+  );
+}
+
 function setupIpc() {
   ipcMain.handle("auth:login", async () => openDiscordLogin());
 
@@ -329,6 +386,26 @@ function setupIpc() {
     persistSession(valid.token, valid.user);
     return valid;
   });
+
+  ipcMain.handle("app:getVersion", () => app.getVersion());
+
+  ipcMain.handle("update:check", async () => {
+    if (!app.isPackaged) return { ok: false, reason: "dev" };
+    if (process.env.PORTABLE_EXECUTABLE_DIR) return { ok: false, reason: "portable" };
+    if (process.platform === "darwin") return { ok: false, reason: "unsigned-mac" };
+    try {
+      await autoUpdater.checkForUpdates();
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, reason: err instanceof Error ? err.message : "check failed" };
+    }
+  });
+
+  ipcMain.handle("update:quitAndInstall", () => {
+    // isSilent=true on Windows triggers the silent NSIS update; isForceRunAfter
+    // relaunches the app once the new version is installed.
+    autoUpdater.quitAndInstall(true, true);
+  });
 }
 
 app
@@ -337,6 +414,7 @@ app
     setupIpc();
     configureRequestHeaderRewrite();
     createMainWindow();
+    setupAutoUpdate();
 
     app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
