@@ -27,11 +27,15 @@ export interface SafetyConfig {
   invalidHardCap: number;
   /** Pause duration when soft cap is crossed (ms) */
   softPauseDurationMs: number;
+  /** Length of the extended automatic pause when max soft pauses is reached (ms) */
+  extendedPauseDurationMs: number;
+  /** Number of extended auto-pauses to attempt before a genuine hard abort */
+  maxExtendedPauses: number;
   /** Mandatory cooldown after consecutive 429 responses (ms) */
   consecutive429CooldownMs: number;
   /** Stop after this many consecutive 429s without a success */
   maxConsecutive429: number;
-  /** Max consecutive soft-pauses before hard abort */
+  /** Max consecutive soft-pauses before triggering an extended pause */
   maxConsecutiveSoftPauses: number;
   /** Max delete requests per rolling minute */
   maxDeletesPerMinute: number;
@@ -46,20 +50,22 @@ export interface SafetyConfig {
 export const SAFETY_PRESETS: Record<SafetyMode, SafetyConfig> = {
   safe: {
     mode: "safe",
-    minDeleteDelayMs: 1800,
-    minSearchDelayMs: 2500,
-    jitterMs: 500,
+    minDeleteDelayMs: 1900,
+    minSearchDelayMs: 2700,
+    jitterMs: 600,
     batchDeleteCount: 50,
     batchPauseMs: 60_000,
     invalidSoftCap: 35,
-    invalidHardCap: 120,
+    invalidHardCap: 150,
     softPauseDurationMs: 360_000, // 6 min — lets the rolling 10-min window mostly drain
+    extendedPauseDurationMs: 720_000, // 12 min — full reset of Discord's rolling budget
+    maxExtendedPauses: 2,
     consecutive429CooldownMs: 60_000,
     maxConsecutive429: 4,
     maxConsecutiveSoftPauses: 5,
-    maxDeletesPerMinute: 28,
-    paginationCheckpointEvery: 25,
-    paginationCheckpointMs: 18_000,
+    maxDeletesPerMinute: 26,
+    paginationCheckpointEvery: 20,
+    paginationCheckpointMs: 20_000,
     maxPaginationPages: 350,
   },
   balanced: {
@@ -70,8 +76,10 @@ export const SAFETY_PRESETS: Record<SafetyMode, SafetyConfig> = {
     batchDeleteCount: 100,
     batchPauseMs: 45_000,
     invalidSoftCap: 70,
-    invalidHardCap: 200,
+    invalidHardCap: 250,
     softPauseDurationMs: 240_000, // 4 min
+    extendedPauseDurationMs: 480_000, // 8 min
+    maxExtendedPauses: 2,
     consecutive429CooldownMs: 45_000,
     maxConsecutive429: 6,
     maxConsecutiveSoftPauses: 5,

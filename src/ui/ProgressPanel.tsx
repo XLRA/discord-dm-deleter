@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { DeletionProgress } from "../types/discord";
 import { msToHuman } from "../deletion/snowflake";
 
@@ -14,6 +14,13 @@ interface ProgressPanelProps {
   onRunAgain: () => void;
 }
 
+function formatRemaining(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const mins = Math.floor(total / 60);
+  const secs = total % 60;
+  return `${mins}:${secs.toString().padStart(2, "0")}`;
+}
+
 export function ProgressPanel({
   progress,
   running,
@@ -27,6 +34,38 @@ export function ProgressPanel({
 }: ProgressPanelProps) {
   const logRef = useRef<HTMLDivElement>(null);
   const [paused, setPaused] = usePausedState(progress.phase);
+  const [nowTick, setNowTick] = useState(() => Date.now());
+
+  // Run a 1-second countdown clock while the engine is in a safety pause
+  // (or any other state with a pauseEndsAt target). Skipping the interval
+  // outside that state keeps idle renders cheap.
+  useEffect(() => {
+    if (progress.phase !== "safety-paused" || !progress.pauseEndsAt) return;
+    const id = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [progress.phase, progress.pauseEndsAt]);
+
+  const remainingMs = useMemo(() => {
+    if (!progress.pauseEndsAt) return 0;
+    return Math.max(0, progress.pauseEndsAt - nowTick);
+  }, [progress.pauseEndsAt, nowTick]);
+
+  // Track the largest "remainingMs" we've seen this pause so the progress
+  // bar's denominator stays stable as it counts down.
+  const pauseTotalRef = useRef(0);
+  useEffect(() => {
+    if (progress.phase !== "safety-paused" || !progress.pauseEndsAt) {
+      pauseTotalRef.current = 0;
+      return;
+    }
+    pauseTotalRef.current = Math.max(pauseTotalRef.current, remainingMs);
+  }, [progress.phase, progress.pauseEndsAt, remainingMs]);
+
+  const pausePct = useMemo(() => {
+    const total = pauseTotalRef.current;
+    if (!total || total <= 0) return 0;
+    return Math.max(0, Math.min(100, ((total - remainingMs) / total) * 100));
+  }, [remainingMs]);
 
   useEffect(() => {
     if (logRef.current) {
@@ -39,6 +78,9 @@ export function ProgressPanel({
     progress.totalFound > 0 ? Math.round((totalProcessed / progress.totalFound) * 100) : 0;
   const indeterminate = progress.phase === "searching" || progress.phase === "fallback";
 
+  const inLivePause = progress.phase === "safety-paused" && !progress.pauseIsFinal;
+  const isFinalSafetyStop = progress.phase === "safety-paused" && progress.pauseIsFinal;
+
   const phaseLabel: Record<DeletionProgress["phase"], string> = {
     idle: "Ready",
     searching: "Searching messages…",
@@ -46,7 +88,9 @@ export function ProgressPanel({
     deleting: dryRun ? "Counting matches…" : "Deleting messages…",
     done: dryRun ? "Dry run complete" : "Complete",
     error: "Stopped due to error",
-    "safety-paused": "Paused for account safety",
+    "safety-paused": inLivePause
+      ? `Cooling down — resumes in ${formatRemaining(remainingMs)}`
+      : "Paused for account safety",
     cancelled: "Cancelled",
   };
 
@@ -54,7 +98,7 @@ export function ProgressPanel({
     progress.phase === "done" ||
     progress.phase === "cancelled" ||
     progress.phase === "error" ||
-    progress.phase === "safety-paused";
+    isFinalSafetyStop;
 
   return (
     <div className="card">
@@ -131,7 +175,7 @@ export function ProgressPanel({
         </span>
       </div>
 
-      {progress.invalidCount >= 30 && !isFinished && (
+      {progress.invalidCount >= 30 && !isFinished && !inLivePause && (
         <div className="warning-box" style={{ marginTop: 12 }}>
           Discord has returned <strong>{progress.invalidCount}</strong> rate-limit /
           throttling responses in the last 10 minutes. This is normal during large cleanups —
@@ -140,7 +184,68 @@ export function ProgressPanel({
         </div>
       )}
 
-      {running && (
+      {inLivePause && (
+        <div className="safety-pause-card" role="status" aria-live="polite">
+          <div className="safety-pause-card__head">
+            <div className="safety-pause-card__icon" aria-hidden="true">
+              ⏳
+            </div>
+            <div>
+              <div className="safety-pause-card__title">
+                Cooling down to keep your account safe
+              </div>
+              <div className="safety-pause-card__sub">
+                The app stopped requests to let Discord&apos;s rolling rate-limit window
+                clear. It will <strong>auto-resume on its own</strong> — you don&apos;t need
+                to do anything.
+              </div>
+            </div>
+            <div
+              className="safety-pause-card__timer"
+              aria-label={`Auto-resume in ${formatRemaining(remainingMs)}`}
+            >
+              <span className="safety-pause-card__timer-label">Resumes in</span>
+              <span className="safety-pause-card__timer-value">
+                {formatRemaining(remainingMs)}
+              </span>
+            </div>
+          </div>
+
+          <div className="safety-pause-card__bar">
+            <div
+              className="safety-pause-card__bar-fill"
+              style={{ width: `${pausePct}%` }}
+            />
+          </div>
+
+          <div className="safety-pause-card__meta">
+            <span>
+              <strong>Deleted so far:</strong> {progress.deleted}
+            </span>
+            <span>
+              <strong>Invalid responses (10m):</strong> {progress.invalidCount}
+            </span>
+            <span>
+              <strong>Mode:</strong> {progress.safetyMode}
+            </span>
+          </div>
+
+          {progress.message && (
+            <div className="safety-pause-card__reason">{progress.message}</div>
+          )}
+
+          <div className="safety-pause-card__actions">
+            <button className="btn-danger" onClick={onStop}>
+              Stop the run instead
+            </button>
+            <span className="muted" style={{ fontSize: "0.8rem" }}>
+              Already-deleted messages are never re-checked on resume.
+            </span>
+          </div>
+        </div>
+      )}
+
+      {running && !inLivePause && (
         <div className="wizard-footer">
           {paused ? (
             <button
@@ -200,16 +305,16 @@ export function ProgressPanel({
               running again — already-deleted messages won&apos;t be re-attempted.
             </div>
           )}
-          {progress.phase === "safety-paused" && (
+          {isFinalSafetyStop && (
             <div className="warning-box">
               <strong>Paused for account safety</strong> after deleting{" "}
-              <strong>{progress.deleted}</strong> messages. This is the app being cautious —
-              not a crash or a ban. Discord returned more rate-limit responses than the safety
-              monitor likes to see in a short window.
+              <strong>{progress.deleted}</strong> messages. The app already tried its automatic
+              cooldowns and Discord&apos;s rate-limiter hasn&apos;t settled — this is the
+              built-in safety net, not a crash or a ban.
               <div style={{ marginTop: 10 }}>
-                <strong>What to do:</strong> wait roughly 10 minutes for Discord&apos;s rolling
-                budget to clear, then click <em>Run again on this DM</em> below. Messages
-                already deleted will be skipped automatically.
+                <strong>What to do:</strong> close the app for ~15 minutes (longer is better),
+                then re-open and click <em>Run again on this DM</em>. Messages already
+                deleted will be skipped automatically.
               </div>
               {progress.message && (
                 <div style={{ marginTop: 10 }} className="muted">

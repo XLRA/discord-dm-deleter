@@ -4,7 +4,12 @@ import { MessageService, SessionExpiredError } from "../api/messages";
 import { MessageSearch } from "../api/search";
 import { getSafetyConfig, type SafetyMode } from "../safety/config";
 import { isDeletableUserMessage, SafetyAbortError } from "../safety/monitor";
-import type { DeletionFilters, DeletionProgress, DiscordMessage } from "../types/discord";
+import type {
+  DeletionFilters,
+  DeletionPhase,
+  DeletionProgress,
+  DiscordMessage,
+} from "../types/discord";
 import {
   buildSearchBounds,
   buildSearchHas,
@@ -80,6 +85,10 @@ export class DeletionEngine {
     };
     this.lastEmitAt = 0;
 
+    // Tracks whichever "real" phase we're in (searching/fallback/deleting) so
+    // we can restore it after an automatic safety pause finishes.
+    let activePhase: DeletionPhase = "searching";
+
     const emit = (force = false) => {
       const now = Date.now();
       if (!force && now - this.lastEmitAt < PROGRESS_EMIT_INTERVAL_MS) return;
@@ -96,6 +105,46 @@ export class DeletionEngine {
       this.log(line);
       callbacks.onLog(line);
       emit(true);
+    };
+
+    const setActivePhase = (phase: DeletionPhase): void => {
+      activePhase = phase;
+      // If we're not currently inside a safety pause, reflect immediately.
+      if (this.progress.phase !== "safety-paused") {
+        this.progress.phase = phase;
+      }
+    };
+
+    // If the safety monitor escalates to an extended automatic pause, mirror
+    // that into progress state so the UI can show a live countdown instead of
+    // freezing on the previous phase.
+    monitor.setExtendedPauseListener((info) => {
+      this.progress.phase = "safety-paused";
+      this.progress.pauseEndsAt = info.endsAt;
+      this.progress.pauseIsFinal =
+        monitor.getStatus().extendedPausesUsed >= safetyConfig.maxExtendedPauses;
+      this.progress.message = info.reason;
+      log(
+        `Auto-pausing for ${Math.round(safetyConfig.extendedPauseDurationMs / 60_000)} min — ` +
+          "the app will resume on its own. " +
+          `(${this.progress.pauseIsFinal ? "Final" : "Will retry"})`,
+      );
+      emit(true);
+    });
+
+    // Called at the top of each loop iteration to clear the safety-paused
+    // state once the cooldown ends and the next request goes through.
+    const maybeResumeFromPause = (): void => {
+      if (
+        this.progress.phase === "safety-paused" &&
+        (!this.progress.pauseEndsAt || this.progress.pauseEndsAt <= Date.now())
+      ) {
+        this.progress.phase = activePhase;
+        this.progress.pauseEndsAt = undefined;
+        this.progress.message = undefined;
+        log("Safety cooldown complete — resuming.");
+        emit(true);
+      }
     };
 
     log(
@@ -117,6 +166,7 @@ export class DeletionEngine {
 
       while (offset < totalResults && !this.stopped) {
         await this.waitIfPaused();
+        maybeResumeFromPause();
 
         const result = await this.search.searchChannel(
           channelId,
@@ -133,6 +183,7 @@ export class DeletionEngine {
           (waitMs) =>
             log(`Search index/rate limit — waiting ${Math.round(waitMs / 1000)}s...`),
         );
+        maybeResumeFromPause();
 
         totalResults = result.total_results ?? 0;
         const flat = this.search.flattenMessages(result);
@@ -156,9 +207,16 @@ export class DeletionEngine {
       }
 
       if (!this.stopped) {
-        this.setPhase("fallback");
+        setActivePhase("fallback");
         log("Pagination fallback to catch missed messages...");
-        await this.paginateFallback(channelId, authorId, filters, collected, log);
+        await this.paginateFallback(
+          channelId,
+          authorId,
+          filters,
+          collected,
+          log,
+          maybeResumeFromPause,
+        );
       }
 
       const toProcess = [...collected.values()]
@@ -175,19 +233,21 @@ export class DeletionEngine {
       if (filters.dryRun) {
         log(`Dry run complete — ${toProcess.length} of your messages would be deleted.`);
         log("(The other person's messages are never touched.)");
-        this.setPhase("done");
+        setActivePhase("done");
         emit(true);
+        monitor.setExtendedPauseListener(null);
         return this.progress;
       }
 
       if (toProcess.length === 0) {
         log("No deletable messages found matching your filters.");
-        this.setPhase("done");
+        setActivePhase("done");
         emit(true);
+        monitor.setExtendedPauseListener(null);
         return this.progress;
       }
 
-      this.setPhase("deleting");
+      setActivePhase("deleting");
       log(`Deleting ${toProcess.length} messages, one at a time...`);
 
       const deleteStart = Date.now();
@@ -197,6 +257,7 @@ export class DeletionEngine {
       for (const msg of toProcess) {
         if (this.stopped) break;
         await this.waitIfPaused();
+        maybeResumeFromPause();
 
         if (forbiddenIds.has(msg.id)) {
           this.progress.skipped++;
@@ -209,6 +270,7 @@ export class DeletionEngine {
 
         try {
           const outcome = await this.messages.deleteMessage(channelId, msg.id);
+          maybeResumeFromPause();
           if (outcome === "deleted" || outcome === "gone") {
             this.progress.deleted++;
             batchCount++;
@@ -219,17 +281,23 @@ export class DeletionEngine {
           }
         } catch (err) {
           if (err instanceof SafetyAbortError) {
-            this.setPhase("safety-paused");
+            setActivePhase("safety-paused");
+            this.progress.phase = "safety-paused";
+            this.progress.pauseIsFinal = true;
+            this.progress.pauseEndsAt = undefined;
             this.progress.message = err.message;
             log(err.message);
             emit(true);
+            monitor.setExtendedPauseListener(null);
             return this.progress;
           }
           if (err instanceof SessionExpiredError) {
-            this.setPhase("error");
+            setActivePhase("error");
+            this.progress.phase = "error";
             this.progress.message = err.message;
             log(err.message);
             emit(true);
+            monitor.setExtendedPauseListener(null);
             throw err;
           }
           this.progress.failed++;
@@ -257,13 +325,15 @@ export class DeletionEngine {
       }
 
       if (this.stopped) {
-        this.setPhase("cancelled");
+        setActivePhase("cancelled");
+        this.progress.phase = "cancelled";
         log(
           `Cancelled — deleted ${this.progress.deleted}, ` +
             `skipped ${this.progress.skipped}, failed ${this.progress.failed}.`,
         );
       } else {
-        this.setPhase("done");
+        setActivePhase("done");
+        this.progress.phase = "done";
         log(
           `Done — deleted ${this.progress.deleted}, ` +
             `skipped ${this.progress.skipped} ` +
@@ -281,17 +351,23 @@ export class DeletionEngine {
       }
 
       emit(true);
+      monitor.setExtendedPauseListener(null);
       return this.progress;
     } catch (err) {
+      monitor.setExtendedPauseListener(null);
       if (err instanceof SafetyAbortError) {
-        this.setPhase("safety-paused");
+        setActivePhase("safety-paused");
+        this.progress.phase = "safety-paused";
+        this.progress.pauseIsFinal = true;
+        this.progress.pauseEndsAt = undefined;
         this.progress.message = err.message;
         this.log(err.message);
         callbacks.onLog(err.message);
         emit(true);
         return this.progress;
       }
-      this.setPhase("error");
+      setActivePhase("error");
+      this.progress.phase = "error";
       const message = err instanceof Error ? err.message : String(err);
       this.progress.message = message;
       this.log(message);
@@ -307,6 +383,7 @@ export class DeletionEngine {
     filters: DeletionFilters,
     collected: Map<string, DiscordMessage>,
     log: (line: string) => void,
+    maybeResumeFromPause: () => void,
   ): Promise<void> {
     const config = getSafetyConfig(filters.safetyMode);
 
@@ -342,10 +419,12 @@ export class DeletionEngine {
 
     while (!this.stopped && emptyStreak < 5 && pages < config.maxPaginationPages) {
       await this.waitIfPaused();
+      maybeResumeFromPause();
 
       let batch: DiscordMessage[];
       try {
         batch = await this.messages.fetchMessages(channelId, { before, limit: 100 });
+        maybeResumeFromPause();
       } catch (err) {
         if (err instanceof SessionExpiredError) throw err;
         log(
@@ -408,10 +487,6 @@ export class DeletionEngine {
     while (this.paused && !this.stopped) {
       await sleep(200);
     }
-  }
-
-  private setPhase(phase: DeletionProgress["phase"]): void {
-    this.progress.phase = phase;
   }
 
   private log(line: string): void {

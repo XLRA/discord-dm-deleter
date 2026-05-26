@@ -28,6 +28,17 @@ const INVALID_WEIGHT: Record<InvalidReason, number> = {
 
 /** Successful responses decrement the consecutive-soft-pause counter slowly. */
 const SUCCESS_HEAL_THRESHOLD = 25;
+/** Successful responses needed before a used "extended pause" slot is freed up. */
+const EXTENDED_PAUSE_HEAL_THRESHOLD = 60;
+
+export interface ExtendedPauseInfo {
+  /** Epoch ms when the pause is scheduled to end (engine auto-resumes after this). */
+  endsAt: number;
+  /** Human-readable reason, displayed in the UI under the countdown. */
+  reason: string;
+}
+
+export type ExtendedPauseListener = (info: ExtendedPauseInfo) => void;
 
 export class SafetyMonitor {
   private invalidEvents: InvalidEvent[] = [];
@@ -37,11 +48,20 @@ export class SafetyMonitor {
   private softPauseTriggerWeighted = -1;
   private pauseUntil = 0;
   private successesSincePause = 0;
+  private extendedPausesUsed = 0;
+  private extendedPauseEndsAt = 0;
+  private successesSinceExtendedPause = 0;
+  private extendedPauseListener: ExtendedPauseListener | null = null;
 
   constructor(private config: SafetyConfig) {}
 
   setConfig(config: SafetyConfig): void {
     this.config = config;
+  }
+
+  /** Engine subscribes here to be told when an automatic long pause starts. */
+  setExtendedPauseListener(listener: ExtendedPauseListener | null): void {
+    this.extendedPauseListener = listener;
   }
 
   recordInvalid(status: InvalidReason): void {
@@ -58,11 +78,20 @@ export class SafetyMonitor {
   recordSuccess(): void {
     this.consecutive429 = 0;
     this.successesSincePause++;
+    this.successesSinceExtendedPause++;
     // After a healthy run of successes, forgive past soft pauses so the next
     // hiccup doesn't tip us over the consecutive-pause abort.
     if (this.successesSincePause >= SUCCESS_HEAL_THRESHOLD && this.softPauseCount > 0) {
       this.softPauseCount = Math.max(0, this.softPauseCount - 1);
       this.successesSincePause = 0;
+    }
+    // Same for extended pauses: a sustained clean run gives back one slot.
+    if (
+      this.successesSinceExtendedPause >= EXTENDED_PAUSE_HEAL_THRESHOLD &&
+      this.extendedPausesUsed > 0
+    ) {
+      this.extendedPausesUsed = Math.max(0, this.extendedPausesUsed - 1);
+      this.successesSinceExtendedPause = 0;
     }
   }
 
@@ -120,11 +149,21 @@ export class SafetyMonitor {
       this.softPauseCount++;
       this.successesSincePause = 0;
 
+      // If we've used up our soft-pause budget, escalate: do ONE long extended
+      // pause (up to maxExtendedPauses times) before genuinely aborting. The
+      // engine reflects this state with a phase change + countdown so the user
+      // sees the app actively waiting instead of crashing.
       if (this.softPauseCount >= this.config.maxConsecutiveSoftPauses) {
+        if (this.extendedPausesUsed < this.config.maxExtendedPauses) {
+          return this.triggerExtendedPause(
+            `Discord returned ${Math.round(weighted)} weighted rate-limit responses in ` +
+              "the last 10 minutes. Letting things cool down before continuing.",
+          );
+        }
         throw new SafetyAbortError(
-          `Safety stop after ${this.softPauseCount} consecutive safety pauses ` +
-            `(${Math.round(weighted)} weighted invalid responses in last 10 min). ` +
-            "Wait ~10 minutes and re-run — already-deleted messages won't be re-checked.",
+          `Safety stop after ${this.extendedPausesUsed} extended cooldown(s) didn't ` +
+            "settle Discord's rate-limiter. Wait at least 15 minutes before re-running. " +
+            "Already-deleted messages won't be re-checked.",
         );
       }
 
@@ -159,6 +198,40 @@ export class SafetyMonitor {
     return this.config.batchPauseMs;
   }
 
+  /**
+   * Public so the engine can also escalate to an extended pause if it sees a
+   * pattern it doesn't like (currently only used internally from
+   * checkBeforeRequest, but exposed for future use).
+   */
+  triggerExtendedPause(reason: string): number {
+    const now = Date.now();
+    const duration = this.config.extendedPauseDurationMs;
+    this.extendedPausesUsed++;
+    this.extendedPauseEndsAt = now + duration;
+    this.pauseUntil = this.extendedPauseEndsAt;
+    // We're consciously giving Discord time to forget — start the soft-pause
+    // counter fresh on the other side.
+    this.softPauseCount = 0;
+    this.softPauseTriggerWeighted = -1;
+    this.successesSinceExtendedPause = 0;
+    if (this.extendedPauseListener) {
+      try {
+        this.extendedPauseListener({ endsAt: this.extendedPauseEndsAt, reason });
+      } catch {
+        // listener errors must never propagate into the rate limiter
+      }
+    }
+    return duration;
+  }
+
+  isExtendedPaused(now: number = Date.now()): boolean {
+    return this.extendedPauseEndsAt > now;
+  }
+
+  getExtendedPauseEndsAt(): number {
+    return this.extendedPauseEndsAt;
+  }
+
   getStatus(): {
     invalidCount: number;
     weightedInvalidCount: number;
@@ -166,6 +239,8 @@ export class SafetyMonitor {
     deletesPerMinute: number;
     pausedUntil: number;
     softPauseCount: number;
+    extendedPauseEndsAt: number;
+    extendedPausesUsed: number;
   } {
     return {
       invalidCount: this.getInvalidCount(),
@@ -174,6 +249,8 @@ export class SafetyMonitor {
       deletesPerMinute: this.getDeletesInLastMinute(),
       pausedUntil: this.pauseUntil,
       softPauseCount: this.softPauseCount,
+      extendedPauseEndsAt: this.extendedPauseEndsAt,
+      extendedPausesUsed: this.extendedPausesUsed,
     };
   }
 

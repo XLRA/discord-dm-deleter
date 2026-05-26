@@ -95,6 +95,10 @@ export interface DeletionProgress {
   safetyMode: SafetyMode;
   /** When phase === "safety-paused" or "error", a user-facing explanation. */
   message?: string;
+  /** Epoch ms at which a safety-paused run will auto-resume (countdown target). */
+  pauseEndsAt?: number;
+  /** Whether the auto-resume budget is exhausted (no further auto-pauses possible). */
+  pauseIsFinal?: boolean;
   logs: string[];
 }
 
