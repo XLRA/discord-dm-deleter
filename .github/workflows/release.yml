@@ -17,7 +17,7 @@ jobs:
       matrix:
         os: [windows-latest, macos-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 60
 
     steps:
       - name: Checkout
@@ -32,17 +32,56 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build app
+      - name: Build web bundle
         run: npm run build
 
-      - name: Publish to GitHub Releases (with retry)
+      - name: Package Electron app
+        run: npx --no-install electron-builder --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+      - name: Ensure GitHub Release exists
+        shell: bash
+        run: |
+          set -e
+          if ! gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" > /dev/null 2>&1; then
+            gh release create "${TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "${TAG}" \
+              --generate-notes \
+              || echo "Release already created by another matrix job — continuing."
+          fi
+        env:
+          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: List built artifacts
+        shell: bash
+        run: |
+          echo "Contents of release/:"
+          ls -la release/
+
+      - name: Upload artifacts to release (with retry)
         uses: nick-fields/retry@v3
         with:
-          timeout_minutes: 30
-          max_attempts: 3
+          timeout_minutes: 20
+          max_attempts: 6
           retry_wait_seconds: 30
           retry_on: error
-          command: npx --no-install electron-builder --publish always
+          shell: bash
+          command: |
+            set -e
+            cd release
+            shopt -s nullglob
+            files=(*.exe *.dmg *.AppImage *.deb *.snap *.zip *.yml *.blockmap)
+            if [ ${#files[@]} -eq 0 ]; then
+              echo "No artifacts to upload."
+              exit 1
+            fi
+            echo "Uploading ${#files[@]} files: ${files[*]}"
+            gh release upload "${TAG}" "${files[@]}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --clobber
         env:
+          TAG: ${{ github.ref_name }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CSC_IDENTITY_AUTO_DISCOVERY: "false"
