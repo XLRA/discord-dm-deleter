@@ -24,10 +24,10 @@ Grab the latest installer for your OS from the [**Releases page**](../../release
 
 | OS | File | Notes |
 |---|---|---|
-| Windows | `Discord DM Deleter-Setup-<version>-x64.exe` (NSIS installer) | Standard installer with Start Menu + Desktop shortcuts |
-| Windows | `Discord DM Deleter-<version>-x64-Portable.exe` (portable) | Single-file `.exe`, no install needed |
-| macOS | `Discord DM Deleter-<version>-x64.dmg` / `-arm64.dmg` | Unsigned — see [macOS Gatekeeper](#macos-gatekeeper) |
-| Linux | `Discord DM Deleter-<version>-x64.AppImage` | `chmod +x` then double-click |
+| Windows | `Discord-DM-Deleter-Setup-<version>-x64.exe` (NSIS installer) | Standard installer with Start Menu + Desktop shortcuts |
+| Windows | `Discord-DM-Deleter-<version>-x64-Portable.exe` (portable) | Single-file `.exe`, no install needed |
+| macOS | `Discord-DM-Deleter-<version>-x64.dmg` / `-arm64.dmg` | Unsigned — see [macOS Gatekeeper](#macos-gatekeeper) |
+| Linux | `Discord-DM-Deleter-<version>-x86_64.AppImage` | `chmod +x` then double-click |
 
 > No Discord token to copy/paste, no command line, no terminal. Just open it and sign in with the in-app Discord login.
 
