@@ -1,7 +1,7 @@
 {
   "name": "discord-dm-deleter",
   "productName": "Discord DM Deleter",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Delete your own Discord direct message history with filters and safe rate limiting. Created by sleepmare.",
   "author": {
     "name": "sleepmare",

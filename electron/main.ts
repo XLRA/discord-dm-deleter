@@ -165,6 +165,7 @@ function createMainWindow() {
 
 async function openDiscordLogin(): Promise<SessionData | null> {
   return new Promise((resolve) => {
+    const authPartition = "persist:discord-login";
     const authWindow = new BrowserWindow({
       width: 900,
       height: 720,
@@ -176,21 +177,77 @@ async function openDiscordLogin(): Promise<SessionData | null> {
         nodeIntegration: false,
         contextIsolation: true,
         sandbox: true,
-        partition: "persist:discord-login",
+        partition: authPartition,
       },
     });
 
     let resolved = false;
     let pollTimer: NodeJS.Timeout | null = null;
+    let processingToken = false;
 
     const finish = (result: SessionData | null) => {
       if (resolved) return;
       resolved = true;
       if (pollTimer) clearInterval(pollTimer);
+      // Detach the header listener so it doesn't leak across login attempts.
+      try {
+        session.fromPartition(authPartition).webRequest.onBeforeSendHeaders(null);
+      } catch {
+        // best effort
+      }
       if (!authWindow.isDestroyed()) authWindow.close();
       resolve(result);
     };
 
+    const consumeToken = async (token: string) => {
+      if (resolved || processingToken) return;
+      const cleaned = token.replace(/^"|"$/g, "").trim();
+      if (cleaned.length < 50) return;
+      processingToken = true;
+      try {
+        const sessionData = await validateToken(cleaned);
+        if (sessionData) {
+          persistSession(sessionData.token, sessionData.user);
+          finish(sessionData);
+        }
+      } finally {
+        processingToken = false;
+      }
+    };
+
+    // PRIMARY: capture the Authorization header off Discord's own API traffic.
+    // Discord's web client sends the user token on every authenticated request,
+    // so as soon as the user finishes the login flow we see it directly — no
+    // JS injection or localStorage scrape required.
+    const authSession = session.fromPartition(authPartition);
+    authSession.webRequest.onBeforeSendHeaders(
+      { urls: ["https://discord.com/api/*", "https://*.discord.com/api/*"] },
+      (details, callback) => {
+        try {
+          const headers = details.requestHeaders;
+          const authHeader =
+            (headers["Authorization"] as string | undefined) ??
+            (headers["authorization"] as string | undefined);
+          // Real user tokens are bare (no "Bearer "/"Bot " prefix) and at
+          // least ~70 chars long. Ignore OAuth Bearer flows and bot tokens.
+          if (
+            authHeader &&
+            authHeader.length > 50 &&
+            !authHeader.startsWith("Bearer ") &&
+            !authHeader.startsWith("Bot ")
+          ) {
+            void consumeToken(authHeader);
+          }
+        } catch {
+          // best effort — never break the request flow
+        }
+        callback({ requestHeaders: details.requestHeaders });
+      },
+    );
+
+    // FALLBACK: poll for the token via JS. Discord deletes window.localStorage
+    // on the main app shell to block self-bot tooling, but a freshly-created
+    // same-origin iframe gets its own untouched localStorage we can read.
     const tryExtractToken = async () => {
       if (resolved || authWindow.isDestroyed()) return;
       try {
@@ -204,35 +261,41 @@ async function openDiscordLogin(): Promise<SessionData | null> {
                 if (!t) return null;
                 return String(t).replace(/^"|"$/g, '').trim() || null;
               }
-              var t = clean(localStorage.getItem('token'));
-              if (t && t.length > 50) return t;
-              for (var i = 0; i < localStorage.length; i++) {
-                var k = localStorage.key(i);
-                if (!k) continue;
-                if (k === 'token' || k.toLowerCase().includes('token')) {
-                  var v = clean(localStorage.getItem(k));
-                  if (v && v.length > 50 && v.split('.').length >= 2) return v;
-                }
+              function looksLikeToken(v) {
+                return !!v && v.length > 50 && v.split('.').length >= 3;
               }
+              // First try direct localStorage — works on /login before
+              // Discord's protection kicks in.
+              try {
+                if (window.localStorage) {
+                  var direct = clean(window.localStorage.getItem('token'));
+                  if (looksLikeToken(direct)) return direct;
+                }
+              } catch (e) {}
+              // Then bypass via a same-origin iframe with a fresh window.
+              try {
+                var iframe = document.createElement('iframe');
+                iframe.style.display = 'none';
+                document.body.appendChild(iframe);
+                var ls = iframe.contentWindow && iframe.contentWindow.localStorage;
+                var t = ls ? clean(ls.getItem('token')) : null;
+                try { iframe.remove(); } catch (e) {}
+                if (looksLikeToken(t)) return t;
+              } catch (e) {}
               return null;
             } catch (e) { return null; }
           })()`,
           true,
         );
 
-        if (token && typeof token === "string" && !resolved) {
-          const sessionData = await validateToken(token);
-          if (sessionData) {
-            persistSession(sessionData.token, sessionData.user);
-            finish(sessionData);
-          }
+        if (typeof token === "string" && token) {
+          await consumeToken(token);
         }
       } catch {
         // Ignore — the page may not have loaded yet, or the renderer was destroyed.
       }
     };
 
-    // Poll every second; covers SPA navigations that don't fire did-navigate.
     pollTimer = setInterval(() => void tryExtractToken(), 1000);
 
     authWindow.webContents.on("did-finish-load", () => {
