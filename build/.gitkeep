@@ -1,0 +1,2 @@
+# Drop icon.ico (Windows), icon.icns (macOS), and icon.png (Linux/fallback) here.
+# electron-builder will pick them up automatically during `npm run dist:*`.
