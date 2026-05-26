@@ -70,8 +70,18 @@ export interface DeletionFilters {
   safetyMode: SafetyMode;
 }
 
+export type DeletionPhase =
+  | "idle"
+  | "searching"
+  | "deleting"
+  | "fallback"
+  | "done"
+  | "error"
+  | "safety-paused"
+  | "cancelled";
+
 export interface DeletionProgress {
-  phase: "idle" | "searching" | "deleting" | "fallback" | "done" | "error" | "cancelled";
+  phase: DeletionPhase;
   totalFound: number;
   deleted: number;
   failed: number;
@@ -83,6 +93,8 @@ export interface DeletionProgress {
   currentDelayMs: number;
   etaMs: number;
   safetyMode: SafetyMode;
+  /** When phase === "safety-paused" or "error", a user-facing explanation. */
+  message?: string;
   logs: string[];
 }
 

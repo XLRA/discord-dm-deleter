@@ -12,15 +12,31 @@ interface InvalidEvent {
   reason: InvalidReason;
 }
 
-const MAX_CONSECUTIVE_SOFT_PAUSES = 3;
+/**
+ * Discord's documented "invalid request budget" (10k/10min) treats 401/403/429
+ * identically, but in practice 429s are an *expected* part of normal API use:
+ * they mean "you obeyed the rate-limit headers and asked again, so we told you
+ * to wait." Auth errors (401/403) are the real warning sign that the account
+ * might be under review. We weight them accordingly when computing our internal
+ * caps so legit large cleanups don't trip the abort.
+ */
+const INVALID_WEIGHT: Record<InvalidReason, number> = {
+  "401": 1.0,
+  "403": 1.0,
+  "429": 0.4,
+};
+
+/** Successful responses decrement the consecutive-soft-pause counter slowly. */
+const SUCCESS_HEAL_THRESHOLD = 25;
 
 export class SafetyMonitor {
   private invalidEvents: InvalidEvent[] = [];
   private consecutive429 = 0;
   private deleteTimestamps: number[] = [];
   private softPauseCount = 0;
-  private softPauseTriggerCount = -1;
+  private softPauseTriggerWeighted = -1;
   private pauseUntil = 0;
+  private successesSincePause = 0;
 
   constructor(private config: SafetyConfig) {}
 
@@ -36,10 +52,18 @@ export class SafetyMonitor {
     if (status === "429") {
       this.consecutive429++;
     }
+    this.successesSincePause = 0;
   }
 
   recordSuccess(): void {
     this.consecutive429 = 0;
+    this.successesSincePause++;
+    // After a healthy run of successes, forgive past soft pauses so the next
+    // hiccup doesn't tip us over the consecutive-pause abort.
+    if (this.successesSincePause >= SUCCESS_HEAL_THRESHOLD && this.softPauseCount > 0) {
+      this.softPauseCount = Math.max(0, this.softPauseCount - 1);
+      this.successesSincePause = 0;
+    }
   }
 
   recordDelete(): void {
@@ -48,9 +72,18 @@ export class SafetyMonitor {
     this.deleteTimestamps = this.deleteTimestamps.filter((t) => now - t < 60_000);
   }
 
+  /** Raw count, for display. */
   getInvalidCount(): number {
     this.pruneInvalid(Date.now());
     return this.invalidEvents.length;
+  }
+
+  /** Weighted count, for safety decisions. */
+  getWeightedInvalidCount(): number {
+    this.pruneInvalid(Date.now());
+    let total = 0;
+    for (const e of this.invalidEvents) total += INVALID_WEIGHT[e.reason];
+    return total;
   }
 
   getDeletesInLastMinute(): number {
@@ -63,34 +96,40 @@ export class SafetyMonitor {
   checkBeforeRequest(isDelete: boolean): number {
     const now = Date.now();
     this.pruneInvalid(now);
-    const invalidCount = this.invalidEvents.length;
+    const weighted = this.getWeightedInvalidCount();
 
     if (this.pauseUntil > now) {
       return this.pauseUntil - now;
     }
 
-    if (invalidCount >= this.config.invalidHardCap) {
+    if (weighted >= this.config.invalidHardCap) {
       throw new SafetyAbortError(
-        `Safety stop: ${invalidCount} rate-limit/error responses in the last 10 minutes ` +
-          `(hard cap ${this.config.invalidHardCap}). ` +
-          "Wait at least 10 minutes before trying again to protect your account.",
+        `Safety stop after ${Math.round(weighted)} weighted invalid responses in the ` +
+          `last 10 minutes (hard cap ${this.config.invalidHardCap}). ` +
+          "Wait ~10 minutes for the window to clear, then re-run on this DM — " +
+          "already-deleted messages won't be re-checked.",
       );
     }
 
-    // Trigger a soft pause once each time we cross the soft cap (not on every request after).
-    if (invalidCount >= this.config.invalidSoftCap && invalidCount !== this.softPauseTriggerCount) {
-      this.softPauseTriggerCount = invalidCount;
+    // Trigger a soft pause once each time we cross the soft cap. Use floored
+    // weighted count as a stable trigger key so repeated small additions
+    // across the threshold don't re-fire on every request.
+    const triggerKey = Math.floor(weighted);
+    if (weighted >= this.config.invalidSoftCap && triggerKey !== this.softPauseTriggerWeighted) {
+      this.softPauseTriggerWeighted = triggerKey;
       this.softPauseCount++;
+      this.successesSincePause = 0;
 
-      if (this.softPauseCount >= MAX_CONSECUTIVE_SOFT_PAUSES) {
+      if (this.softPauseCount >= this.config.maxConsecutiveSoftPauses) {
         throw new SafetyAbortError(
-          `Safety stop: ${this.softPauseCount} consecutive safety pauses without recovery ` +
-            `(${invalidCount} invalid responses in last 10 min). Stop and wait before retrying.`,
+          `Safety stop after ${this.softPauseCount} consecutive safety pauses ` +
+            `(${Math.round(weighted)} weighted invalid responses in last 10 min). ` +
+            "Wait ~10 minutes and re-run — already-deleted messages won't be re-checked.",
         );
       }
 
-      this.pauseUntil = now + this.config.consecutive429CooldownMs;
-      return this.config.consecutive429CooldownMs;
+      this.pauseUntil = now + this.config.softPauseDurationMs;
+      return this.config.softPauseDurationMs;
     }
 
     if (this.consecutive429 >= this.config.maxConsecutive429) {
@@ -109,9 +148,9 @@ export class SafetyMonitor {
 
   /** Called by engine after a successful batch — resets pause counter so a fresh job starts clean. */
   notePostBatchProgress(): void {
-    if (this.invalidEvents.length < this.config.invalidSoftCap) {
+    if (this.getWeightedInvalidCount() < this.config.invalidSoftCap) {
       this.softPauseCount = 0;
-      this.softPauseTriggerCount = -1;
+      this.softPauseTriggerWeighted = -1;
     }
   }
 
@@ -122,6 +161,7 @@ export class SafetyMonitor {
 
   getStatus(): {
     invalidCount: number;
+    weightedInvalidCount: number;
     consecutive429: number;
     deletesPerMinute: number;
     pausedUntil: number;
@@ -129,6 +169,7 @@ export class SafetyMonitor {
   } {
     return {
       invalidCount: this.getInvalidCount(),
+      weightedInvalidCount: this.getWeightedInvalidCount(),
       consecutive429: this.consecutive429,
       deletesPerMinute: this.getDeletesInLastMinute(),
       pausedUntil: this.pauseUntil,

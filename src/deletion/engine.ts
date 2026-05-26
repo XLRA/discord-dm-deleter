@@ -219,13 +219,15 @@ export class DeletionEngine {
           }
         } catch (err) {
           if (err instanceof SafetyAbortError) {
-            this.setPhase("error");
+            this.setPhase("safety-paused");
+            this.progress.message = err.message;
             log(err.message);
             emit(true);
             return this.progress;
           }
           if (err instanceof SessionExpiredError) {
             this.setPhase("error");
+            this.progress.message = err.message;
             log(err.message);
             emit(true);
             throw err;
@@ -282,7 +284,8 @@ export class DeletionEngine {
       return this.progress;
     } catch (err) {
       if (err instanceof SafetyAbortError) {
-        this.setPhase("error");
+        this.setPhase("safety-paused");
+        this.progress.message = err.message;
         this.log(err.message);
         callbacks.onLog(err.message);
         emit(true);
@@ -290,6 +293,7 @@ export class DeletionEngine {
       }
       this.setPhase("error");
       const message = err instanceof Error ? err.message : String(err);
+      this.progress.message = message;
       this.log(message);
       callbacks.onLog(message);
       emit(true);
@@ -304,9 +308,30 @@ export class DeletionEngine {
     collected: Map<string, DiscordMessage>,
     log: (line: string) => void,
   ): Promise<void> {
+    const config = getSafetyConfig(filters.safetyMode);
+
     let before: string | undefined =
       filters.beforeMessageId ??
       (filters.beforeDate ? dateToSnowflake(new Date(filters.beforeDate)) : undefined);
+
+    // OPTIMIZATION: if search already collected messages, start pagination from
+    // the oldest message search found. Discord's search has a hard 10k offset
+    // cap, so anything older than the oldest hit is the gap we actually need
+    // to fill — re-walking what search already covered is wasteful and adds
+    // hundreds of pages of unnecessary API calls on large DMs.
+    if (!before && collected.size > 0) {
+      let oldestId: string | null = null;
+      for (const m of collected.values()) {
+        if (oldestId === null || BigInt(m.id) < BigInt(oldestId)) oldestId = m.id;
+      }
+      if (oldestId) {
+        before = oldestId;
+        log(
+          `Pagination starting from oldest search hit (${oldestId}) ` +
+            "to skip already-scanned history.",
+        );
+      }
+    }
 
     const stopAtId =
       filters.afterMessageId ??
@@ -314,9 +339,8 @@ export class DeletionEngine {
 
     let pages = 0;
     let emptyStreak = 0;
-    const MAX_FALLBACK_PAGES = 1000;
 
-    while (!this.stopped && emptyStreak < 5 && pages < MAX_FALLBACK_PAGES) {
+    while (!this.stopped && emptyStreak < 5 && pages < config.maxPaginationPages) {
       await this.waitIfPaused();
 
       let batch: DiscordMessage[];
@@ -359,10 +383,24 @@ export class DeletionEngine {
 
       before = oldest;
       if (batch.length < 100) break;
+
+      // Periodic long-pause checkpoint: every N pages, sit out a longer break
+      // so Discord doesn't see a continuous wall of /messages requests from
+      // one account. Cheap insurance against rate-limit escalation.
+      if (pages > 0 && pages % config.paginationCheckpointEvery === 0 && !this.stopped) {
+        const secs = Math.round(config.paginationCheckpointMs / 1000);
+        log(`Pagination checkpoint at page ${pages} — resting ${secs}s before continuing…`);
+        await sleepInterruptible(config.paginationCheckpointMs, () => this.stopped);
+      }
     }
 
-    if (pages >= MAX_FALLBACK_PAGES) {
-      log(`Pagination capped at ${MAX_FALLBACK_PAGES} pages.`);
+    if (pages >= config.maxPaginationPages) {
+      log(
+        `Pagination capped at ${config.maxPaginationPages} pages (~${
+          config.maxPaginationPages * 100
+        } messages scanned). ` +
+          "Re-run on this DM to continue — already-deleted messages will be skipped.",
+      );
     }
   }
 

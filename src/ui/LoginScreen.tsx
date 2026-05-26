@@ -2,9 +2,10 @@ interface LoginScreenProps {
   onLogin: () => void;
   loading: boolean;
   error: string | null;
+  version?: string;
 }
 
-export function LoginScreen({ onLogin, loading, error }: LoginScreenProps) {
+export function LoginScreen({ onLogin, loading, error, version }: LoginScreenProps) {
   return (
     <div className="login-screen">
       <div className="login-card">
@@ -12,6 +13,7 @@ export function LoginScreen({ onLogin, loading, error }: LoginScreenProps) {
           DM
         </div>
         <h1>Discord DM Deleter</h1>
+        {version && <div className="login-version">v{version}</div>}
         <p className="tagline">
           Wipe your own messages from any direct message conversation — safely, with filters
           and adaptive rate limiting.
@@ -52,6 +54,7 @@ export function LoginScreen({ onLogin, loading, error }: LoginScreenProps) {
 
       <p className="attribution" style={{ borderTop: "none", marginTop: 16 }}>
         Created by <strong>sleepmare</strong>
+        {version ? ` · v${version}` : ""}
       </p>
     </div>
   );

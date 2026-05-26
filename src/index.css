@@ -904,6 +904,19 @@ input[type="radio"] {
   line-height: 1.5;
 }
 
+.login-version {
+  display: inline-block;
+  padding: 3px 10px;
+  margin: 8px auto 12px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
 .completion-card {
   text-align: center;
   padding: 32px 24px;

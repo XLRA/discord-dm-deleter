@@ -198,6 +198,7 @@ export default function App() {
         onLogin={() => void handleLogin()}
         loading={loginLoading}
         error={loginError}
+        version={version}
       />
     );
   }
@@ -232,7 +233,11 @@ export default function App() {
         </div>
       </header>
 
-      <WizardSteps step={step} running={running} done={progress.phase === "done"} />
+      <WizardSteps
+        step={step}
+        running={running}
+        done={progress.phase === "done"}
+      />
 
       {step === 1 && (
         <DMPicker

@@ -46,13 +46,15 @@ export function ProgressPanel({
     deleting: dryRun ? "Counting matches…" : "Deleting messages…",
     done: dryRun ? "Dry run complete" : "Complete",
     error: "Stopped due to error",
+    "safety-paused": "Paused for account safety",
     cancelled: "Cancelled",
   };
 
   const isFinished =
     progress.phase === "done" ||
     progress.phase === "cancelled" ||
-    progress.phase === "error";
+    progress.phase === "error" ||
+    progress.phase === "safety-paused";
 
   return (
     <div className="card">
@@ -129,11 +131,12 @@ export function ProgressPanel({
         </span>
       </div>
 
-      {progress.invalidCount >= 10 && !isFinished && (
+      {progress.invalidCount >= 30 && !isFinished && (
         <div className="warning-box" style={{ marginTop: 12 }}>
-          Discord has returned <strong>{progress.invalidCount}</strong> rate-limit / forbidden
-          responses in the last 10 minutes. The app will auto-pause if this keeps climbing —
-          consider stopping for a while if it nears 30+.
+          Discord has returned <strong>{progress.invalidCount}</strong> rate-limit /
+          throttling responses in the last 10 minutes. This is normal during large cleanups —
+          the app weights them lightly and auto-paces itself. You only need to stop manually
+          if the count keeps climbing past 80+ for many minutes.
         </div>
       )}
 
@@ -197,9 +200,32 @@ export function ProgressPanel({
               running again — already-deleted messages won&apos;t be re-attempted.
             </div>
           )}
+          {progress.phase === "safety-paused" && (
+            <div className="warning-box">
+              <strong>Paused for account safety</strong> after deleting{" "}
+              <strong>{progress.deleted}</strong> messages. This is the app being cautious —
+              not a crash or a ban. Discord returned more rate-limit responses than the safety
+              monitor likes to see in a short window.
+              <div style={{ marginTop: 10 }}>
+                <strong>What to do:</strong> wait roughly 10 minutes for Discord&apos;s rolling
+                budget to clear, then click <em>Run again on this DM</em> below. Messages
+                already deleted will be skipped automatically.
+              </div>
+              {progress.message && (
+                <div style={{ marginTop: 10 }} className="muted">
+                  Details: {progress.message}
+                </div>
+              )}
+            </div>
+          )}
           {progress.phase === "error" && (
             <div className="danger-box">
               Stopped due to errors. Deleted <strong>{progress.deleted}</strong> before stopping.
+              {progress.message && (
+                <div style={{ marginTop: 8 }} className="muted">
+                  {progress.message}
+                </div>
+              )}{" "}
               Check the log below for details.
             </div>
           )}
