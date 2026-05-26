@@ -1,4 +1,13 @@
-import { app, BrowserWindow, dialog, ipcMain, safeStorage, session, shell } from "electron";
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  powerSaveBlocker,
+  safeStorage,
+  session,
+  shell,
+} from "electron";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -44,6 +53,10 @@ const store = new Store<{ session?: PersistedSession }>({
 
 let mainWindow: BrowserWindow | null = null;
 let cachedToken: string | null = null;
+// Active powerSaveBlocker id while a deletion run is in progress. The blocker
+// stops the OS from suspending the renderer (which would freeze the rate
+// limiter's setTimeout chain) while the window is minimized or backgrounded.
+let backgroundBlockerId: number | null = null;
 
 const DISCORD_API = "https://discord.com/api/v10";
 const DESKTOP_USER_AGENT =
@@ -132,8 +145,19 @@ function createMainWindow() {
       // Required so the renderer can fetch discord.com/api without CORS blocking
       // the response. Safe because this window only loads our local bundle.
       webSecurity: false,
+      // Chromium clamps background-tab timers to 1Hz and starts aggressive
+      // throttling when the window is hidden/minimized. Our rate-limiter
+      // schedules every API call via setTimeout, so throttling stretches
+      // 2s waits into many seconds and stalls deletion runs whenever the
+      // user tabs away. Disabling lets the renderer keep its real clock.
+      backgroundThrottling: false,
     },
   });
+
+  // Belt-and-suspenders: even with backgroundThrottling:false on the webPrefs,
+  // some Chromium pathways still throttle on visibility change, so we call the
+  // webContents API explicitly once the contents exist.
+  mainWindow.webContents.setBackgroundThrottling(false);
 
   // Route any window.open / target="_blank" link to the user's default browser.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -406,7 +430,50 @@ function setupIpc() {
     // relaunches the app once the new version is installed.
     autoUpdater.quitAndInstall(true, true);
   });
+
+  // Renderer toggles this when a deletion run starts/stops. While active we
+  // hold a "prevent-app-suspension" blocker so the OS won't put the process
+  // to sleep when minimized or after the screen locks on a laptop.
+  ipcMain.handle("bg:setActive", (_event, active: boolean) => {
+    if (active) {
+      if (backgroundBlockerId === null) {
+        try {
+          backgroundBlockerId = powerSaveBlocker.start("prevent-app-suspension");
+        } catch {
+          // Some Linux distros without the right d-bus services will throw;
+          // background timers still run thanks to backgroundThrottling:false.
+          backgroundBlockerId = null;
+        }
+      }
+    } else {
+      if (backgroundBlockerId !== null) {
+        try {
+          if (powerSaveBlocker.isStarted(backgroundBlockerId)) {
+            powerSaveBlocker.stop(backgroundBlockerId);
+          }
+        } catch {
+          // best effort
+        }
+        backgroundBlockerId = null;
+      }
+    }
+    return { active: backgroundBlockerId !== null };
+  });
 }
+
+// Hard guarantee: never leak the blocker past process exit.
+app.on("before-quit", () => {
+  if (backgroundBlockerId !== null) {
+    try {
+      if (powerSaveBlocker.isStarted(backgroundBlockerId)) {
+        powerSaveBlocker.stop(backgroundBlockerId);
+      }
+    } catch {
+      // ignore
+    }
+    backgroundBlockerId = null;
+  }
+});
 
 app
   .whenReady()

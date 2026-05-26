@@ -160,6 +160,11 @@ export default function App() {
     const engine = new DeletionEngine(session.token, filters.safetyMode);
     engineRef.current = engine;
 
+    // Keep the renderer un-throttled and prevent OS suspension for the
+    // duration of the run, so deletion progresses even when the window is
+    // minimized / unfocused / behind another app.
+    void window.electronAPI.setBackgroundActive(true).catch(() => {});
+
     try {
       await engine.run(
         selectedChannel.id,
@@ -177,6 +182,7 @@ export default function App() {
       }
     } finally {
       setRunning(false);
+      void window.electronAPI.setBackgroundActive(false).catch(() => {});
     }
   };
 

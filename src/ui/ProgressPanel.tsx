@@ -112,6 +112,18 @@ export function ProgressPanel({
         </span>
       </div>
 
+      {running && !isFinished && (
+        <div className="bg-hint" role="note">
+          <span className="bg-hint__icon" aria-hidden="true">
+            ✓
+          </span>
+          <span>
+            Runs in the background — feel free to minimize the window or switch apps.
+            The deletion keeps going as long as the app is open.
+          </span>
+        </div>
+      )}
+
       <div className="progress-bar">
         {indeterminate ? (
           <div className="progress-bar-fill indeterminate" />

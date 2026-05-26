@@ -11,6 +11,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
   getVersion: (): Promise<string> => ipcRenderer.invoke("app:getVersion"),
   checkForUpdates: (): Promise<UpdateCheckResult> => ipcRenderer.invoke("update:check"),
   quitAndInstall: (): Promise<void> => ipcRenderer.invoke("update:quitAndInstall"),
+  setBackgroundActive: (active: boolean): Promise<{ active: boolean }> =>
+    ipcRenderer.invoke("bg:setActive", active),
   onUpdateEvent: (listener: UpdateListener): (() => void) => {
     const handler = (_e: IpcRendererEvent, payload: UpdateEvent) => listener(payload);
     ipcRenderer.on("update:event", handler);

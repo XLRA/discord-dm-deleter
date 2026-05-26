@@ -949,6 +949,33 @@ input[type="radio"] {
   margin: 0 0 20px;
 }
 
+.bg-hint {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 8px 12px;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  background: rgba(64, 164, 110, 0.08);
+  border: 1px solid rgba(64, 164, 110, 0.25);
+  border-radius: var(--radius);
+}
+
+.bg-hint__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--success);
+  color: #0a0a0a;
+  font-size: 0.7rem;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
 .safety-pause-card {
   margin-top: 18px;
   padding: 18px 20px;

@@ -8,6 +8,7 @@ export interface ElectronAPI {
   checkForUpdates: () => Promise<UpdateCheckResult>;
   quitAndInstall: () => Promise<void>;
   onUpdateEvent: (listener: (event: UpdateEvent) => void) => () => void;
+  setBackgroundActive: (active: boolean) => Promise<{ active: boolean }>;
 }
 
 declare global {
