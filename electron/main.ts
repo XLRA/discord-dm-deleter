@@ -1,8 +1,34 @@
-import { app, BrowserWindow, ipcMain, safeStorage, session, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, safeStorage, session, shell } from "electron";
 import path from "node:path";
 import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 import Store from "electron-store";
 import type { SessionData } from "../src/types/discord";
+
+// ESM equivalents of CommonJS __dirname / __filename. Electron loads this
+// bundle as ESM (package.json "type": "module"), so the CJS globals are
+// not defined here — referencing them silently crashes the app at startup.
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Surface any unhandled error to the user instead of letting the app exit
+// silently with a blank screen. Written before any other work in case the
+// crash happens during module init / startup.
+function reportFatal(scope: string, err: unknown): void {
+  const message = err instanceof Error ? `${err.message}\n\n${err.stack ?? ""}` : String(err);
+  try {
+    if (app.isReady()) {
+      dialog.showErrorBox(`Discord DM Deleter — ${scope}`, message);
+    } else {
+      app.whenReady().then(() => dialog.showErrorBox(`Discord DM Deleter — ${scope}`, message));
+    }
+  } catch {
+    // Last resort: write to stderr so logs (if any) still capture it.
+    console.error(`[${scope}]`, message);
+  }
+}
+
+process.on("uncaughtException", (err) => reportFatal("Uncaught exception", err));
+process.on("unhandledRejection", (err) => reportFatal("Unhandled promise rejection", err));
 
 interface PersistedSession {
   encryptedToken?: string;
@@ -242,15 +268,18 @@ function setupIpc() {
   });
 }
 
-app.whenReady().then(() => {
-  setupIpc();
-  configureRequestHeaderRewrite();
-  createMainWindow();
+app
+  .whenReady()
+  .then(() => {
+    setupIpc();
+    configureRequestHeaderRewrite();
+    createMainWindow();
 
-  app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
-  });
-});
+    app.on("activate", () => {
+      if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
+    });
+  })
+  .catch((err) => reportFatal("Startup failed", err));
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
