@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, safeStorage, session } from "electron";
+import { app, BrowserWindow, ipcMain, safeStorage, session, shell } from "electron";
 import path from "node:path";
 import fs from "node:fs";
 import Store from "electron-store";
@@ -104,6 +104,25 @@ function createMainWindow() {
       // the response. Safe because this window only loads our local bundle.
       webSecurity: false,
     },
+  });
+
+  // Route any window.open / target="_blank" link to the user's default browser.
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith("http://") || url.startsWith("https://")) {
+      void shell.openExternal(url);
+    }
+    return { action: "deny" };
+  });
+
+  // Block in-app navigation away from our bundle (defense in depth — webSecurity:false).
+  mainWindow.webContents.on("will-navigate", (event, url) => {
+    const currentUrl = mainWindow?.webContents.getURL() ?? "";
+    if (url !== currentUrl) {
+      event.preventDefault();
+      if (url.startsWith("http://") || url.startsWith("https://")) {
+        void shell.openExternal(url);
+      }
+    }
   });
 
   if (process.env.VITE_DEV_SERVER_URL) {
